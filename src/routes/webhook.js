@@ -1,30 +1,31 @@
 const express = require('express');
-const { downloadRecording } = require('../services/ringcentral');
+const { downloadRecording, downloadVoicemail, getRecentVoicemails } = require('../services/ringcentral');
 const { transcribe, extractCallerName } = require('../services/transcription');
 const { findContactByPhone, createContact, addNote } = require('../services/ghl');
 
 const router = express.Router();
 
+// Track processed voicemail IDs to avoid double-processing
+const _processedVoicemails = new Set();
+
 /**
  * POST /webhook/ringcentral
  *
- * Receives RingCentral telephony session event notifications.
+ * Handles two event types from RingCentral:
  *
- * RingCentral first validates the endpoint by sending a request with a
- * "Validation-Token" header — we echo it back immediately.
+ * 1. Telephony session events — call recordings
+ *    We look for parties with status "Disconnected" and a recordings[] array.
  *
- * After validation, RC sends JSON event bodies as call state changes.
- * We look for parties with:
- *   - status.code === "Disconnected"   (call ended)
- *   - recordings[] with entries        (recording is attached)
+ * 2. Message-store events — voicemails
+ *    When a new voicemail arrives, we fetch unread voicemails for the extension,
+ *    download the audio, transcribe it, and add a note to the GHL contact.
  *
- * Pipeline per recording:
- *   1. Download audio from RingCentral
+ * Pipeline (same for both):
+ *   1. Download audio
  *   2. Transcribe with OpenAI Whisper
- *   3. Use GPT to extract the caller's name from the transcript
- *   4. Search GHL for an existing contact by caller phone number
- *      - Found    → skip creation, just add the transcript as a note
- *      - Not found → create a new contact using the extracted name, then add note
+ *   3. Extract caller name with GPT
+ *   4. Find or create GHL contact by phone number
+ *   5. Add transcript note
  */
 router.post('/ringcentral', async (req, res) => {
   // ── Validation handshake ──────────────────────────────────────────────────
@@ -46,12 +47,55 @@ router.post('/ringcentral', async (req, res) => {
     return;
   }
 
+  // ── Detect event type ─────────────────────────────────────────────────────
+  const isVoicemailEvent =
+    (body?.event || '').includes('message-store') ||
+    (event.changes || []).some((c) => c.type === 'VoiceMail');
+
+  if (isVoicemailEvent) {
+    // ── Voicemail event ───────────────────────────────────────────────────
+    const extensionId = event.extensionId || body?.ownerId || '~';
+    console.log(`[webhook] Voicemail event for extension ${extensionId}`);
+
+    getRecentVoicemails(extensionId)
+      .then((messages) => {
+        for (const msg of messages) {
+          if (_processedVoicemails.has(msg.id)) continue;
+          _processedVoicemails.add(msg.id);
+
+          const attachment = (msg.attachments || []).find(
+            (a) => a.type === 'AudioRecording' || a.contentType?.startsWith('audio/')
+          );
+          if (!attachment) continue;
+
+          const callerPhone = msg.from?.phoneNumber || msg.from?.extensionNumber || null;
+          const calledPhone = msg.to?.[0]?.phoneNumber || msg.to?.[0]?.extensionNumber || null;
+
+          processVoicemail({
+            extensionId,
+            messageId: msg.id,
+            attachmentId: attachment.id,
+            callerPhone,
+            calledPhone,
+            creationTime: msg.creationTime,
+          }).catch((err) => {
+            console.error(`[webhook] Voicemail pipeline failed for message ${msg.id}:`, err.message);
+          });
+        }
+      })
+      .catch((err) => {
+        console.error('[webhook] Failed to fetch voicemails:', err.message);
+      });
+
+    return;
+  }
+
+  // ── Telephony session event (call recording) ──────────────────────────────
   const parties = event.parties || [];
   const sessionId = event.telephonySessionId || event.sessionId || 'unknown';
 
   console.log(`[webhook] Telephony session ${sessionId} — ${parties.length} parties`);
 
-  // ── Process each disconnected party with a recording ──────────────────────
   for (const party of parties) {
     const status = party.status?.code;
     const recordings = party.recordings || [];
@@ -157,6 +201,51 @@ async function processRecording({
   await addNote(contact.id, noteBody);
 
   console.log(`[pipeline] Done — note added to GHL contact ${contact.id}`);
+}
+
+/**
+ * Full pipeline for a single voicemail.
+ */
+async function processVoicemail({ extensionId, messageId, attachmentId, callerPhone, calledPhone, creationTime }) {
+  console.log(`[voicemail] Starting for message ${messageId}`);
+
+  const { buffer, contentType } = await downloadVoicemail(extensionId, messageId, attachmentId);
+  console.log(`[voicemail] Downloaded ${Math.round(buffer.length / 1024)} KB (${contentType})`);
+
+  const transcript = await transcribe(buffer, contentType);
+
+  if (!callerPhone) {
+    console.warn('[voicemail] No caller phone number — skipping GHL update');
+    return;
+  }
+
+  const existingContact = await findContactByPhone(callerPhone);
+  let contact;
+  if (existingContact) {
+    console.log(`[voicemail] Existing contact found (${existingContact.id})`);
+    contact = existingContact;
+  } else {
+    const { firstName, lastName } = await extractCallerName(transcript);
+    contact = await createContact(callerPhone, firstName, lastName);
+  }
+
+  const vmDate = creationTime
+    ? new Date(creationTime).toLocaleString('en-US', { timeZone: 'America/New_York' })
+    : new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
+
+  const noteBody = [
+    `Voicemail Transcript`,
+    `Date: ${vmDate}`,
+    `From: ${callerPhone || 'unknown'}`,
+    `To:   ${calledPhone || 'unknown'}`,
+    `Message ID: ${messageId}`,
+    ``,
+    `─── Transcript ───`,
+    transcript || '(no speech detected)',
+  ].join('\n');
+
+  await addNote(contact.id, noteBody);
+  console.log(`[voicemail] Done — note added to GHL contact ${contact.id}`);
 }
 
 module.exports = router;

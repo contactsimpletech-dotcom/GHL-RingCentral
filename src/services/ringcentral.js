@@ -61,13 +61,58 @@ async function downloadRecording(recordingId) {
 }
 
 /**
- * Create (or renew) a RingCentral webhook subscription for telephony session events.
- * Subscribes to account-level call events so we receive recording info for all extensions.
+ * Download a voicemail attachment from the RingCentral message store.
+ * Returns a Buffer of the audio content and the content-type header.
+ */
+async function downloadVoicemail(extensionId, messageId, attachmentId) {
+  const token = await getToken();
+  const { serverUrl } = config.ringcentral;
+
+  const res = await axios.get(
+    `${serverUrl}/restapi/v1.0/account/~/extension/${extensionId}/message-store/${messageId}/content/${attachmentId}`,
+    {
+      headers: { Authorization: `Bearer ${token}` },
+      responseType: 'arraybuffer',
+    }
+  );
+
+  return {
+    buffer: Buffer.from(res.data),
+    contentType: res.headers['content-type'] || 'audio/mpeg',
+  };
+}
+
+/**
+ * Fetch recent voicemail messages for an extension from the message store.
+ */
+async function getRecentVoicemails(extensionId) {
+  const token = await getToken();
+  const { serverUrl } = config.ringcentral;
+
+  const res = await axios.get(
+    `${serverUrl}/restapi/v1.0/account/~/extension/${extensionId}/message-store`,
+    {
+      headers: { Authorization: `Bearer ${token}` },
+      params: { messageType: 'VoiceMail', readStatus: 'Unread', perPage: 10 },
+    }
+  );
+
+  return res.data.records || [];
+}
+
+/**
+ * Create (or renew) a RingCentral webhook subscription for telephony session events
+ * and voicemail message-store events.
  * The subscription expires in 7 days; call this on server startup to keep it fresh.
  */
 async function upsertWebhookSubscription(webhookUrl) {
   const token = await getToken();
   const { serverUrl } = config.ringcentral;
+
+  const eventFilters = [
+    '/restapi/v1.0/account/~/telephony/sessions',
+    '/restapi/v1.0/account/~/extension/~/message-store',
+  ];
 
   // List existing subscriptions to avoid duplicates
   const listRes = await axios.get(`${serverUrl}/restapi/v1.0/subscription`, {
@@ -82,10 +127,10 @@ async function upsertWebhookSubscription(webhookUrl) {
   );
 
   if (existing) {
-    // Renew by updating the expiresIn
+    // Renew and ensure both event filters are present
     const renewRes = await axios.put(
       `${serverUrl}/restapi/v1.0/subscription/${existing.id}`,
-      { expiresIn: 604800 },
+      { eventFilters, expiresIn: 604800 },
       { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
     );
     console.log('[ringcentral] Webhook subscription renewed:', renewRes.data.id);
@@ -96,7 +141,7 @@ async function upsertWebhookSubscription(webhookUrl) {
   const createRes = await axios.post(
     `${serverUrl}/restapi/v1.0/subscription`,
     {
-      eventFilters: ['/restapi/v1.0/account/~/telephony/sessions'],
+      eventFilters,
       deliveryMode: {
         transportType: 'WebHook',
         address: webhookUrl,
@@ -112,4 +157,4 @@ async function upsertWebhookSubscription(webhookUrl) {
   return createRes.data;
 }
 
-module.exports = { getToken, downloadRecording, upsertWebhookSubscription };
+module.exports = { getToken, downloadRecording, downloadVoicemail, getRecentVoicemails, upsertWebhookSubscription };
