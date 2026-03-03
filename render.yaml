@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: ghl-ringcentral
+    runtime: node
+    buildCommand: npm install
+    startCommand: node src/index.js
+    envVars:
+      - key: RC_CLIENT_ID
+        sync: false
+      - key: RC_CLIENT_SECRET
+        sync: false
+      - key: RC_JWT
+        sync: false
+      - key: RC_SERVER_URL
+        value: https://platform.ringcentral.com
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GHL_API_KEY
+        sync: false
+      - key: GHL_LOCATION_ID
+        sync: false
+      - key: SERVER_URL
+        sync: false
+      - key: PORT
+        value: "3000"
