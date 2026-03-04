@@ -13,8 +13,40 @@ function ghlClient() {
 }
 
 function normalizePhone(phone) {
+  if (!phone) return null;
   const digits = phone.replace(/\D/g, '');
   return `+${digits}`;
+}
+
+/**
+ * Build a GHL contact payload from extracted caller info.
+ * Maps transcript fields to GHL standard + custom fields.
+ */
+function buildContactPayload(phone, info = {}) {
+  const payload = {
+    locationId: config.ghl.locationId,
+    phone: normalizePhone(phone),
+    firstName: info.firstName || 'Unknown',
+    lastName: info.lastName || 'Caller',
+  };
+
+  if (info.email)              payload.email         = info.email;
+  if (info.jobTitle)           payload.jobTitle      = info.jobTitle;
+  if (info.businessName)       payload.companyName   = info.businessName;
+  if (info.website)            payload.website       = info.website;
+
+  // Custom fields — these use GHL's customField array format
+  const customFields = [];
+  if (info.serviceIssue)       customFields.push({ key: 'service_issue',          field_value: info.serviceIssue });
+  if (info.networkGroup)       customFields.push({ key: 'network_group',           field_value: info.networkGroup });
+  if (info.chapterChamber)     customFields.push({ key: 'chapter_/_chamber',       field_value: info.chapterChamber });
+  if (info.networkingEventName)customFields.push({ key: 'networking_event_name',   field_value: info.networkingEventName });
+  if (info.industry)           customFields.push({ key: 'industry',                field_value: info.industry });
+  if (info.phone)              customFields.push({ key: 'phone',                   field_value: normalizePhone(info.phone) });
+
+  if (customFields.length > 0) payload.customField = customFields;
+
+  return payload;
 }
 
 async function findContactByPhone(phone) {
@@ -35,49 +67,36 @@ async function findContactByPhone(phone) {
   return null;
 }
 
-/**
- * Create a new GHL contact.
- * Maps extracted email to the email field and phone to companyPhone field.
- */
-async function createContact(phone, firstName, lastName, email = null, extractedPhone = null) {
+async function createContact(phone, info = {}) {
   const client = ghlClient();
-  const normalized = normalizePhone(phone);
-
-  const payload = {
-    locationId: config.ghl.locationId,
-    phone: normalized,
-    firstName: firstName || 'Unknown',
-    lastName: lastName || 'Caller',
-  };
-
-  // Map email to GHL email field
-  if (email) {
-    payload.email = email;
-    console.log(`[ghl] Setting email: ${email}`);
-  }
-
-  // Map spoken phone number to companyPhone field (Main Company Phone in GHL)
-  if (extractedPhone) {
-    const normalizedExtracted = normalizePhone(extractedPhone);
-    payload.companyPhone = normalizedExtracted;
-    console.log(`[ghl] Setting companyPhone: ${normalizedExtracted}`);
-  }
-
+  const payload = buildContactPayload(phone, info);
   const res = await client.post('/contacts/', payload);
   const contact = res.data?.contact;
-  console.log(`[ghl] Created contact ${contact.id} (${firstName} ${lastName}) for ${normalized}`);
+  console.log(`[ghl] Created contact ${contact.id} for ${payload.phone}`);
   return contact;
 }
 
 /**
- * Update an existing GHL contact with email and/or phone from transcript.
+ * Update an existing contact with any newly extracted fields.
  */
-async function updateContact(contactId, { email, phone } = {}) {
+async function updateContact(contactId, info = {}) {
   const client = ghlClient();
   const updates = {};
 
-  if (email) updates.email = email;
-  if (phone) updates.companyPhone = normalizePhone(phone);
+  if (info.email)              updates.email       = info.email;
+  if (info.jobTitle)           updates.jobTitle    = info.jobTitle;
+  if (info.businessName)       updates.companyName = info.businessName;
+  if (info.website)            updates.website     = info.website;
+
+  const customFields = [];
+  if (info.serviceIssue)        customFields.push({ key: 'service_issue',         field_value: info.serviceIssue });
+  if (info.networkGroup)        customFields.push({ key: 'network_group',          field_value: info.networkGroup });
+  if (info.chapterChamber)      customFields.push({ key: 'chapter_/_chamber',      field_value: info.chapterChamber });
+  if (info.networkingEventName) customFields.push({ key: 'networking_event_name',  field_value: info.networkingEventName });
+  if (info.industry)            customFields.push({ key: 'industry',               field_value: info.industry });
+  if (info.phone)               customFields.push({ key: 'phone',                  field_value: normalizePhone(info.phone) });
+
+  if (customFields.length > 0) updates.customField = customFields;
 
   if (Object.keys(updates).length === 0) return;
 
