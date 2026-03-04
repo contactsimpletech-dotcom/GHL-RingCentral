@@ -1,6 +1,13 @@
 const axios = require('axios');
 const config = require('../config');
 
+// Personal email providers to skip when inferring business name from domain
+const PERSONAL_EMAIL_DOMAINS = new Set([
+  'gmail','yahoo','hotmail','outlook','icloud','aol','protonmail',
+  'live','msn','me','mac','ymail','googlemail','comcast','att',
+  'verizon','sbcglobal','bellsouth','cox','charter','earthlink'
+]);
+
 function ghlClient() {
   return axios.create({
     baseURL: config.ghl.baseUrl,
@@ -19,10 +26,27 @@ function normalizePhone(phone) {
 }
 
 /**
+ * If no business name was extracted but an email was,
+ * infer business name from the email domain.
+ * e.g. "kevin@costco.com" -> "Costco"
+ * Skips personal providers like gmail, yahoo, etc.
+ */
+function inferBusinessName(info) {
+  if (info.businessName || !info.email) return info.businessName || null;
+  const domain = info.email.split('@')[1];
+  if (!domain) return null;
+  const name = domain.split('.')[0].toLowerCase();
+  if (PERSONAL_EMAIL_DOMAINS.has(name)) return null;
+  // Capitalize first letter
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+/**
  * Build a GHL contact payload from extracted caller info.
- * Maps transcript fields to GHL standard + custom fields.
  */
 function buildContactPayload(phone, info = {}) {
+  const businessName = inferBusinessName(info) || info.businessName;
+
   const payload = {
     locationId: config.ghl.locationId,
     phone: normalizePhone(phone),
@@ -30,19 +54,18 @@ function buildContactPayload(phone, info = {}) {
     lastName: info.lastName || 'Caller',
   };
 
-  if (info.email)              payload.email         = info.email;
-  if (info.jobTitle)           payload.jobTitle      = info.jobTitle;
-  if (info.businessName)       payload.companyName   = info.businessName;
-  if (info.website)            payload.website       = info.website;
+  if (info.email)      payload.email       = info.email;
+  if (info.jobTitle)   payload.jobTitle    = info.jobTitle;
+  if (businessName)    payload.companyName = businessName;
+  if (info.website)    payload.website     = info.website;
 
-  // Custom fields — these use GHL's customField array format
   const customFields = [];
-  if (info.serviceIssue)       customFields.push({ key: 'service_issue',          field_value: info.serviceIssue });
-  if (info.networkGroup)       customFields.push({ key: 'network_group',           field_value: info.networkGroup });
-  if (info.chapterChamber)     customFields.push({ key: 'chapter_/_chamber',       field_value: info.chapterChamber });
-  if (info.networkingEventName)customFields.push({ key: 'networking_event_name',   field_value: info.networkingEventName });
-  if (info.industry)           customFields.push({ key: 'industry',                field_value: info.industry });
-  if (info.phone)              customFields.push({ key: 'phone',                   field_value: normalizePhone(info.phone) });
+  if (info.serviceIssue)        customFields.push({ key: 'service_issue',          field_value: info.serviceIssue });
+  if (info.networkGroup)        customFields.push({ key: 'network_group',           field_value: info.networkGroup });
+  if (info.chapterChamber)      customFields.push({ key: 'chapter_/_chamber',       field_value: info.chapterChamber });
+  if (info.networkingEventName) customFields.push({ key: 'networking_event_name',   field_value: info.networkingEventName });
+  if (info.industry)            customFields.push({ key: 'industry',                field_value: info.industry });
+  if (info.phone)               customFields.push({ key: 'phone',                   field_value: normalizePhone(info.phone) });
 
   if (customFields.length > 0) payload.customField = customFields;
 
@@ -70,23 +93,22 @@ async function findContactByPhone(phone) {
 async function createContact(phone, info = {}) {
   const client = ghlClient();
   const payload = buildContactPayload(phone, info);
+  console.log('[ghl] Creating contact:', JSON.stringify(payload));
   const res = await client.post('/contacts/', payload);
   const contact = res.data?.contact;
   console.log(`[ghl] Created contact ${contact.id} for ${payload.phone}`);
   return contact;
 }
 
-/**
- * Update an existing contact with any newly extracted fields.
- */
 async function updateContact(contactId, info = {}) {
   const client = ghlClient();
+  const businessName = inferBusinessName(info) || info.businessName;
   const updates = {};
 
-  if (info.email)              updates.email       = info.email;
-  if (info.jobTitle)           updates.jobTitle    = info.jobTitle;
-  if (info.businessName)       updates.companyName = info.businessName;
-  if (info.website)            updates.website     = info.website;
+  if (info.email)    updates.email       = info.email;
+  if (info.jobTitle) updates.jobTitle    = info.jobTitle;
+  if (businessName)  updates.companyName = businessName;
+  if (info.website)  updates.website     = info.website;
 
   const customFields = [];
   if (info.serviceIssue)        customFields.push({ key: 'service_issue',         field_value: info.serviceIssue });
