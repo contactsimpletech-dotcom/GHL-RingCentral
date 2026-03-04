@@ -15,12 +15,9 @@ async function transcribe(audioBuffer, contentType = 'audio/mpeg') {
 
 /**
  * Extract all relevant caller fields from a transcript using GPT.
- * Maps to GHL custom fields.
  */
 async function extractCallerInfo(transcript) {
-  if (!transcript || transcript.trim().length === 0) {
-    return {};
-  }
+  if (!transcript || transcript.trim().length === 0) return {};
 
   try {
     const response = await openai.chat.completions.create({
@@ -30,20 +27,26 @@ async function extractCallerInfo(transcript) {
         {
           role: 'system',
           content: `You extract caller information from a phone call or voicemail transcript.
-Extract only what the CALLER says (not the agent). Return a JSON object with these keys (set to null if not found):
+Extract only what the CALLER says (not the agent/receiver). Return a JSON object with these keys (null if not found):
+
 - firstName: caller's first name
-- lastName: caller's last name
-- phone: caller's phone number (digits only, e.g. "9096036030")
-- email: caller's email (reconstruct from speech, e.g. "kevin at demo dot com" → "kevin@demo.com")
-- jobTitle: their job title or role
-- industry: their industry or business sector
-- serviceIssue: any service problem, issue, or reason they are calling
-- networkGroup: any networking group they mention
-- chapterChamber: any chapter or chamber of commerce they mention
-- businessName: their company or business name
-- networkingEventName: any networking event they mention
-- website: their website (reconstruct from speech, e.g. "contactsimpletech dot com" → "contactsimpletech.com")
-Return ONLY the JSON object, no extra text.`,
+- lastName: caller's last name  
+- phone: caller's phone number they mention (digits only, e.g. "9092542546")
+- email: caller's email (reconstruct from speech e.g. "kevin at brightstarthivegan dot com" -> "kevin@brightstarthivegan.com")
+- jobTitle: their job title or role (e.g. "owner", "CEO", "marketing director")
+- industry: their industry or business sector (e.g. "food restaurant", "construction", "tech")
+- serviceIssue: any service problem or reason they are calling (e.g. "payment processor not working")
+- networkGroup: any networking group they belong to (e.g. "Team Network", "BNI")
+- chapterChamber: any chapter or chamber name (e.g. "You Get It", "Upland Chamber")
+- businessName: their company or business name (e.g. "Bright Star Thai Vegan")
+- networkingEventName: any specific networking event name
+- website: their website (reconstruct from speech e.g. "brightstarthivegan dot com" -> "brightstarthivegan.com")
+- city: their city if mentioned
+- state: their state if mentioned (full name or abbreviation)
+- postalCode: their zip/postal code if mentioned
+- country: their country if mentioned
+
+Return ONLY the JSON object.`,
         },
         { role: 'user', content: transcript },
       ],
