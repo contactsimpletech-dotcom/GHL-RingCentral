@@ -3,6 +3,7 @@ const express = require('express');
 const config = require('./config');
 const webhookRouter = require('./routes/webhook');
 const setupRouter = require('./routes/setup');
+const audioRouter = require('./routes/audio');
 const { upsertWebhookSubscription } = require('./services/ringcentral');
 
 const app = express();
@@ -13,6 +14,7 @@ app.use(express.urlencoded({ extended: true }));
 // ── Routes ────────────────────────────────────────────────────────────────────
 app.use('/webhook', webhookRouter);
 app.use('/setup', setupRouter);
+app.use('/audio', audioRouter);       // audio stream / player / download
 
 app.get('/health', (_req, res) => res.json({ ok: true, service: 'ghl-ringcentral' }));
 
@@ -20,14 +22,16 @@ app.get('/health', (_req, res) => res.json({ ok: true, service: 'ghl-ringcentral
 app.listen(config.port, async () => {
   console.log(`[server] Listening on port ${config.port}`);
 
-  // Auto-register the RingCentral webhook subscription on startup
+  if (config.serverUrl) {
+    console.log(`[server] Audio player: ${config.serverUrl}/audio/player/recording/<id>`);
+  }
+
   if (config.serverUrl && config.ringcentral.jwt) {
     const webhookUrl = `${config.serverUrl}/webhook/ringcentral`;
     console.log(`[server] Auto-registering RingCentral webhook: ${webhookUrl}`);
     try {
       await upsertWebhookSubscription(webhookUrl);
     } catch (err) {
-      // Non-fatal — subscription can be created manually via POST /setup/subscribe
       console.warn('[server] Could not auto-register webhook:', err.response?.data || err.message);
     }
   } else {
