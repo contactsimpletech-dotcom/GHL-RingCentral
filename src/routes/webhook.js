@@ -65,7 +65,6 @@ router.post('/ringcentral', async (req, res) => {
     const direction = party.direction || 'Unknown';
     const durationSeconds = party.endTime && party.startTime
       ? Math.round((new Date(party.endTime) - new Date(party.startTime)) / 1000) : null;
-    console.log(`[webhook] ${direction} call — from: ${callerPhone}, to: ${calledPhone}, duration: ${durationSeconds ?? '?'}s`);
     for (const rec of recordings) {
       if (!rec.id) continue;
       processRecording({ recordingId: rec.id, callerPhone, calledPhone, direction, durationSeconds, sessionId })
@@ -82,17 +81,15 @@ async function processRecording({ recordingId, callerPhone, calledPhone, directi
   const callerPhone_ = direction === 'Inbound' ? callerPhone : calledPhone;
   if (!callerPhone_) { console.warn('[pipeline] No caller phone — skipping GHL update'); return; }
 
-  const { firstName, lastName, email, phone: extractedPhone } = await extractCallerInfo(transcript);
+  const info = await extractCallerInfo(transcript);
 
   const existingContact = await findContactByPhone(callerPhone_);
   let contact;
   if (existingContact) {
-    console.log(`[pipeline] Existing contact (${existingContact.id})`);
     contact = existingContact;
-    // Update email and companyPhone if extracted from transcript
-    await updateContact(contact.id, { email, phone: extractedPhone });
+    await updateContact(contact.id, info);
   } else {
-    contact = await createContact(callerPhone_, firstName, lastName, email, extractedPhone);
+    contact = await createContact(callerPhone_, info);
   }
 
   const base = audioBaseUrl();
@@ -120,7 +117,7 @@ async function processRecording({ recordingId, callerPhone, calledPhone, directi
     '',
     '─── Transcript ───',
     transcript || '(no speech detected)',
-  ].filter(line => line !== undefined).join('\n');
+  ].join('\n');
 
   await addNote(contact.id, noteBody);
   console.log(`[pipeline] Done — note added to GHL contact ${contact.id}`);
@@ -133,16 +130,15 @@ async function processVoicemail({ extensionId, messageId, attachmentId, callerPh
 
   if (!callerPhone) { console.warn('[voicemail] No caller phone — skipping GHL update'); return; }
 
-  const { firstName, lastName, email, phone: extractedPhone } = await extractCallerInfo(transcript);
+  const info = await extractCallerInfo(transcript);
 
   const existingContact = await findContactByPhone(callerPhone);
   let contact;
   if (existingContact) {
-    console.log(`[voicemail] Existing contact (${existingContact.id})`);
     contact = existingContact;
-    await updateContact(contact.id, { email, phone: extractedPhone });
+    await updateContact(contact.id, info);
   } else {
-    contact = await createContact(callerPhone, firstName, lastName, email, extractedPhone);
+    contact = await createContact(callerPhone, info);
   }
 
   const base = audioBaseUrl();
@@ -168,7 +164,7 @@ async function processVoicemail({ extensionId, messageId, attachmentId, callerPh
     '',
     '─── Transcript ───',
     transcript || '(no speech detected)',
-  ].filter(line => line !== undefined).join('\n');
+  ].join('\n');
 
   await addNote(contact.id, noteBody);
   console.log(`[voicemail] Done — note added to GHL contact ${contact.id}`);
