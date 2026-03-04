@@ -30,7 +30,7 @@ async function findContactByPhone(phone) {
   const normalized = normalizePhone(phone);
 
   try {
-    const res = await client.get('/contacts/search', {
+    const res = await client.get('/contacts/', {
       params: {
         locationId: config.ghl.locationId,
         query: normalized,
