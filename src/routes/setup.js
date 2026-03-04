@@ -1,76 +1,52 @@
 const express = require('express');
 const { upsertWebhookSubscription, getToken, downloadVoicemail } = require('../services/ringcentral');
-const { transcribe, extractCallerName } = require('../services/transcription');
-const { findContactByPhone, createContact, addNote } = require('../services/ghl');
+const { transcribe, extractCallerInfo } = require('../services/transcription');
+const { findContactByPhone, createContact, updateContact, addNote, getCustomFieldMap } = require('../services/ghl');
 const config = require('../config');
 const axios = require('axios');
 
 const router = express.Router();
 
-/**
- * POST /setup/subscribe
- */
 router.post('/subscribe', async (req, res) => {
   try {
-    const webhookUrl =
-      req.body?.webhookUrl ||
-      `${config.serverUrl}/webhook/ringcentral`;
-
+    const webhookUrl = req.body?.webhookUrl || `${config.serverUrl}/webhook/ringcentral`;
     if (!webhookUrl.startsWith('http')) {
-      return res.status(400).json({
-        error: 'Cannot determine webhook URL. Set SERVER_URL in your environment or pass webhookUrl in the request body.',
-      });
+      return res.status(400).json({ error: 'Cannot determine webhook URL.' });
     }
-
-    console.log(`[setup] Registering RingCentral webhook: ${webhookUrl}`);
     const subscription = await upsertWebhookSubscription(webhookUrl);
-
-    res.json({
-      ok: true,
-      message: 'RingCentral webhook subscription is active',
-      subscriptionId: subscription.id,
-      expiresAt: subscription.expirationTime,
-      webhookUrl,
-    });
+    res.json({ ok: true, subscriptionId: subscription.id, expiresAt: subscription.expirationTime, webhookUrl });
   } catch (err) {
-    console.error('[setup] Subscription failed:', err.response?.data || err.message);
-    res.status(502).json({
-      error: 'Failed to create RingCentral webhook subscription',
-      details: err.response?.data || err.message,
-    });
+    res.status(502).json({ error: 'Failed to create subscription', details: err.response?.data || err.message });
   }
 });
 
-/**
- * GET /setup/status
- */
 router.get('/status', (req, res) => {
   const mask = (val) => (val ? `${val.slice(0, 4)}...${val.slice(-4)}` : 'NOT SET');
   res.json({
-    ringcentral: {
-      clientId: mask(config.ringcentral.clientId),
-      clientSecret: mask(config.ringcentral.clientSecret),
-      jwt: mask(config.ringcentral.jwt),
-      serverUrl: config.ringcentral.serverUrl,
-    },
+    ringcentral: { clientId: mask(config.ringcentral.clientId), serverUrl: config.ringcentral.serverUrl },
     openai: { apiKey: mask(config.openai.apiKey) },
-    ghl: {
-      apiKey: mask(config.ghl.apiKey),
-      locationId: config.ghl.locationId || 'NOT SET',
-    },
-    server: {
-      serverUrl: config.serverUrl || 'NOT SET — set SERVER_URL env var',
-      webhookEndpoint: config.serverUrl ? `${config.serverUrl}/webhook/ringcentral` : 'unknown',
-    },
+    ghl: { apiKey: mask(config.ghl.apiKey), locationId: config.ghl.locationId || 'NOT SET' },
+    server: { serverUrl: config.serverUrl || 'NOT SET', webhookEndpoint: config.serverUrl ? `${config.serverUrl}/webhook/ringcentral` : 'unknown' },
   });
 });
 
 /**
+ * GET /setup/fields
+ * Returns all GHL custom field names and IDs for this location.
+ * Visit this URL after deploy to verify your field names match.
+ */
+router.get('/fields', async (req, res) => {
+  try {
+    const fieldMap = await getCustomFieldMap();
+    res.json({ ok: true, totalFields: Object.keys(fieldMap).length / 2, fields: fieldMap });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
+/**
  * GET /setup/reprocess/:messageId
- * Reprocesses an existing voicemail — downloads audio, transcribes,
- * adds a new GHL note with listen + download links, and shows a player page.
- *
- * Example: https://ghl-ringcentral.onrender.com/setup/reprocess/3470704185053
+ * Reprocesses an existing voicemail — downloads, transcribes, fills all GHL fields, shows audio player.
  */
 router.get('/reprocess/:messageId', async (req, res) => {
   const { messageId } = req.params;
@@ -90,10 +66,7 @@ router.get('/reprocess/:messageId', async (req, res) => {
     const attachment = (msg.attachments || []).find(
       (a) => a.type === 'AudioRecording' || a.contentType?.startsWith('audio/')
     );
-
-    if (!attachment) {
-      return res.status(404).json({ error: 'No audio attachment found for this message.' });
-    }
+    if (!attachment) return res.status(404).json({ error: 'No audio attachment found.' });
 
     const callerPhone = msg.from?.phoneNumber || msg.from?.extensionNumber || null;
     const calledPhone = msg.to?.[0]?.phoneNumber || msg.to?.[0]?.extensionNumber || null;
@@ -101,11 +74,17 @@ router.get('/reprocess/:messageId', async (req, res) => {
 
     const { buffer, contentType } = await downloadVoicemail(extensionId, messageId, attachmentId);
     const transcript = await transcribe(buffer, contentType);
+    const info = await extractCallerInfo(transcript);
 
     let contact;
     if (callerPhone) {
       const existing = await findContactByPhone(callerPhone);
-      contact = existing || await createContact(callerPhone, ...(Object.values(await extractCallerName(transcript))));
+      if (existing) {
+        contact = existing;
+        await updateContact(contact.id, info);
+      } else {
+        contact = await createContact(callerPhone, info);
+      }
     }
 
     const base = (config.serverUrl || '').replace(/\/$/, '');
@@ -143,7 +122,7 @@ router.get('/reprocess/:messageId', async (req, res) => {
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:1rem}
-    .card{background:#1e293b;border:1px solid #334155;border-radius:16px;padding:2rem;max-width:520px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+    .card{background:#1e293b;border:1px solid #334155;border-radius:16px;padding:2rem;max-width:540px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.5)}
     h1{font-size:1rem;font-weight:600;color:#94a3b8;margin-bottom:1.25rem;text-transform:uppercase;letter-spacing:.03em}
     audio{width:100%;border-radius:8px;accent-color:#6366f1;margin-bottom:1.25rem}
     .actions{display:flex;gap:.75rem;margin-bottom:1.5rem}
@@ -153,7 +132,9 @@ router.get('/reprocess/:messageId', async (req, res) => {
     .btn-secondary{background:#334155;color:#cbd5e1}
     .meta{font-size:.8rem;color:#64748b;margin-bottom:1rem;line-height:1.8}
     .success{color:#34d399;font-size:.8rem;margin-bottom:1rem}
+    .extracted{background:#0f172a;border-radius:8px;padding:1rem;font-size:.8rem;margin-bottom:1rem;color:#94a3b8}
     .transcript{background:#0f172a;border-radius:8px;padding:1rem;font-size:.875rem;line-height:1.6;color:#cbd5e1;white-space:pre-wrap}
+    h2{font-size:.8rem;color:#64748b;margin-bottom:.5rem;text-transform:uppercase}
   </style>
 </head>
 <body>
@@ -165,7 +146,11 @@ router.get('/reprocess/:messageId', async (req, res) => {
       <a class="btn btn-primary" href="${downloadUrl}" download>⬇ Download</a>
       <a class="btn btn-secondary" href="${streamUrl}" target="_blank">🔗 Direct Link</a>
     </div>
-    ${contact ? `<div class="success">✅ Note added to GHL contact ${contact.id}</div>` : ''}
+    ${contact ? `<div class="success">✅ GHL contact ${contact.id} updated</div>` : ''}
+    <div class="extracted">
+      <h2>Extracted Fields</h2>
+      <pre>${JSON.stringify(info, null, 2)}</pre>
+    </div>
     <div class="transcript">${transcript || '(no speech detected)'}</div>
   </div>
 </body>
