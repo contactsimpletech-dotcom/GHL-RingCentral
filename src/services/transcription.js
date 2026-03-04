@@ -9,30 +9,24 @@ const openai = new OpenAI({ apiKey: config.openai.apiKey });
 async function transcribe(audioBuffer, contentType = 'audio/mpeg') {
   const ext = contentType.includes('wav') ? 'wav' : 'mp3';
   const file = await toFile(audioBuffer, `recording.${ext}`, { type: contentType });
-
   console.log(`[transcription] Sending ${Math.round(audioBuffer.length / 1024)} KB to Whisper...`);
-
   const response = await openai.audio.transcriptions.create({
     file,
     model: 'whisper-1',
     response_format: 'text',
   });
-
   const text = typeof response === 'string' ? response : response.text;
   console.log(`[transcription] Transcribed ${text.length} characters`);
   return text;
 }
 
 /**
- * Extract the caller's first and last name from a call transcript using GPT.
- *
- * The agent typically says the caller's name naturally during the call
- * (e.g. "Nice to meet you, John Smith" or "So that's under Jane Doe?").
- * Returns { firstName, lastName } — either may be null if not found.
+ * Extract caller name, email, and phone number from a call transcript using GPT.
+ * Returns { firstName, lastName, email, phone }
  */
-async function extractCallerName(transcript) {
+async function extractCallerInfo(transcript) {
   if (!transcript || transcript.trim().length === 0) {
-    return { firstName: null, lastName: null };
+    return { firstName: null, lastName: null, email: null, phone: null };
   }
 
   try {
@@ -43,32 +37,38 @@ async function extractCallerName(transcript) {
         {
           role: 'system',
           content:
-            "You are extracting a caller's name from a phone call transcript. " +
-            "The agent (the person who answered) may say the caller's name naturally " +
-            "(e.g. 'Nice to meet you, John', 'Can I get your name?' 'John Smith', " +
-            "'Let me pull up your account, Sarah', 'So that is for Jane Doe?'). " +
-            "Return ONLY a JSON object with exactly two keys: \"firstName\" and \"lastName\". " +
-            "If you cannot find a clear caller name, set both to null. " +
-            "Do NOT include the agent's own name — only the caller's name.",
+            "You are extracting caller information from a phone call transcript. " +
+            "Look for: the caller's name (not the agent's), their email address, and their phone number. " +
+            "Email addresses are often spelled out letter by letter or said naturally like 'kevin at demo dot com'. " +
+            "Phone numbers may be read digit by digit. " +
+            "Return ONLY a JSON object with exactly four keys: \"firstName\", \"lastName\", \"email\", \"phone\". " +
+            "Reconstruct emails like 'kevin at demo dot com' into 'kevin@demo.com'. " +
+            "Reconstruct phone numbers into digits only e.g. '9096036030'. " +
+            "Set any field to null if not found.",
         },
-        {
-          role: 'user',
-          content: transcript,
-        },
+        { role: 'user', content: transcript },
       ],
     });
 
     const raw = response.choices[0]?.message?.content || '{}';
     const parsed = JSON.parse(raw);
-    const firstName = parsed.firstName || null;
-    const lastName = parsed.lastName || null;
-
-    console.log(`[transcription] Extracted caller name: "${firstName} ${lastName}"`);
-    return { firstName, lastName };
+    console.log(`[transcription] Extracted caller info:`, JSON.stringify(parsed));
+    return {
+      firstName: parsed.firstName || null,
+      lastName: parsed.lastName || null,
+      email: parsed.email || null,
+      phone: parsed.phone || null,
+    };
   } catch (err) {
-    console.error('[transcription] Name extraction failed:', err.message);
-    return { firstName: null, lastName: null };
+    console.error('[transcription] Info extraction failed:', err.message);
+    return { firstName: null, lastName: null, email: null, phone: null };
   }
 }
 
-module.exports = { transcribe, extractCallerName };
+// Legacy wrapper kept for backward compatibility
+async function extractCallerName(transcript) {
+  const { firstName, lastName } = await extractCallerInfo(transcript);
+  return { firstName, lastName };
+}
+
+module.exports = { transcribe, extractCallerName, extractCallerInfo };
